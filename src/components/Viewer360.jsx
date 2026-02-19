@@ -17,7 +17,9 @@ function Panorama({ imageUrl }) {
     );
 }
 
-export default function Viewer360({ imageUrl }) {
+import GridOverlay from './GridOverlay';
+
+export default function Viewer360({ imageUrl, showGrid, gridInterval }) {
     if (!imageUrl) {
         return (
             <div className="flex items-center justify-center h-full bg-gray-900 text-white">
@@ -30,6 +32,7 @@ export default function Viewer360({ imageUrl }) {
         <div className="w-full h-full">
             <Canvas camera={{ position: [0, 0, 0.1] }}>
                 <Panorama imageUrl={imageUrl} />
+                <GridOverlay showGrid={showGrid} gridInterval={gridInterval} />
                 <OrbitControls enableZoom={true} enablePan={false} rotateSpeed={-0.5} />
             </Canvas>
         </div>
