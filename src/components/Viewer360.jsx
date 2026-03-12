@@ -6,12 +6,8 @@ import * as THREE from 'three';
 function Panorama({ imageUrl }) {
     const texture = useLoader(THREE.TextureLoader, imageUrl);
 
-    // Flip the texture horizontally because we are viewing it from inside the sphere
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.repeat.x = -1;
-
     return (
-        <Sphere args={[500, 60, 40]} scale={[-1, 1, 1]}>
+        <Sphere args={[500, 60, 40]} scale={[-1, 1, 1]} rotation={[0, Math.PI, 0]}>
             <meshBasicMaterial map={texture} side={THREE.BackSide} />
         </Sphere>
     );
