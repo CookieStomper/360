@@ -62,7 +62,14 @@ function SatelliteTrack({ svId, track, color }) {
 const _camDir = new THREE.Vector3();
 const _satDir = new THREE.Vector3();
 
-function SatelliteMarker({ svId, el, az, color }) {
+function snrColor(snr) {
+    if (snr == null) return '#888';
+    if (snr >= 40) return '#4ade80';
+    if (snr >= 25) return '#facc15';
+    return '#f87171';
+}
+
+function SatelliteMarker({ svId, el, az, color, snr, isTracked }) {
     const posVec = useMemo(() => elAzToPosition(el, az), [el, az]);
     const position = useMemo(() => [posVec.x, posVec.y, posVec.z], [posVec]);
     const wrapperRef = useRef();
@@ -75,21 +82,32 @@ function SatelliteMarker({ svId, el, az, color }) {
         wrapperRef.current.style.display = facing ? '' : 'none';
     });
 
+    const borderColor = isTracked ? color : '#666';
+    const snrBadgeColor = snrColor(snr);
+
     return (
         <Html position={position} center style={{ pointerEvents: 'none' }}>
             <div ref={wrapperRef} style={{
-                background: color + '22',
-                border: `1px solid ${color}`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 3,
+                background: 'rgba(0,0,0,0.5)',
+                border: `1px solid ${borderColor}`,
                 borderRadius: 4,
                 padding: '1px 5px',
-                color: color,
+                color: isTracked ? color : '#666',
                 fontSize: 11,
                 fontFamily: 'monospace',
                 fontWeight: 600,
                 whiteSpace: 'nowrap',
-                textShadow: '0 0 3px rgba(0,0,0,0.8)',
+                opacity: isTracked ? 1 : 0.5,
             }}>
-                {svId}
+                <span>{svId}</span>
+                {snr != null && (
+                    <span style={{ color: snrBadgeColor, fontSize: 9 }}>
+                        {snr.toFixed(0)}
+                    </span>
+                )}
             </div>
         </Html>
     );
@@ -130,11 +148,26 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
             if (!visibleSvIds.has(svId)) continue;
             const pos = interpolatePosition(sv.track, epochIndex);
             if (pos) {
+                let snr = null;
+                let isTracked = false;
+                if (sv.observed) {
+                    let bestObs = null, bestObsDist = Infinity;
+                    for (const point of sv.observed) {
+                        const d = Math.abs(point[0] - epochIndex);
+                        if (d < bestObsDist) { bestObsDist = d; bestObs = point; }
+                    }
+                    if (bestObs && bestObsDist <= 1) {
+                        isTracked = true;
+                        snr = bestObs[1];
+                    }
+                }
                 result.push({
                     svId,
                     constellation: sv.constellation,
                     el: pos.el,
                     az: pos.az,
+                    snr,
+                    isTracked,
                     color: CONSTELLATION_COLORS[sv.constellation] || '#ffffff',
                 });
             }
@@ -167,6 +200,8 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
                     el={sat.el}
                     az={sat.az}
                     color={sat.color}
+                    snr={sat.snr}
+                    isTracked={sat.isTracked}
                 />
             ))}
         </group>
