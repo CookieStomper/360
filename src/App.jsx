@@ -86,6 +86,7 @@ function App() {
   const [constellationFilter, setConstellationFilter] = useState(DEFAULT_CONSTELLATION_FILTER)
   const [isPlaying, setIsPlaying] = useState(false)
   const [trackMode, setTrackMode] = useState('all')
+  const [lookAtTarget, setLookAtTarget] = useState(null)
 
   const processRinexFiles = useCallback(async () => {
     if (!navFile || !obsFile) return
@@ -428,8 +429,9 @@ function App() {
               {trackedSatellites.map((sat) => (
                 <tr
                   key={sat.svId}
-                  className="border-b border-gray-800"
+                  className="border-b border-gray-800 cursor-pointer hover:bg-white/5 transition-colors"
                   style={{ color: CONSTELLATION_COLORS[sat.constellation] || '#fff' }}
+                  onClick={() => setLookAtTarget({ el: sat.el, az: sat.az, _t: Date.now() })}
                 >
                   <td className="py-1 font-mono">{sat.svId}</td>
                   <td className="py-1 text-right font-mono">{sat.el.toFixed(1)}</td>
@@ -459,6 +461,7 @@ function App() {
             epochIndex={epochIndex}
             constellationFilter={constellationFilter}
             trackMode={trackMode}
+            lookAtTarget={lookAtTarget}
           />
         ) : (
           <div className="flex items-center justify-center h-full text-gray-500">
