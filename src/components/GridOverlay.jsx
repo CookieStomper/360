@@ -21,9 +21,9 @@ const GridOverlay = ({ showGrid, gridInterval }) => {
             for (let long = 0; long <= 360; long += 5) {
                 const theta = THREE.MathUtils.degToRad(long);
 
-                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const x = radius * Math.sin(phi) * Math.sin(theta);
                 const y = radius * Math.cos(phi);
-                const z = radius * Math.sin(phi) * Math.sin(theta);
+                const z = -radius * Math.sin(phi) * Math.cos(theta);
 
                 points.push(new THREE.Vector3(x, y, z));
             }
@@ -46,9 +46,9 @@ const GridOverlay = ({ showGrid, gridInterval }) => {
             for (let lat = -90; lat <= 90; lat += 5) {
                 const phi = THREE.MathUtils.degToRad(90 - lat);
 
-                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const x = radius * Math.sin(phi) * Math.sin(theta);
                 const y = radius * Math.cos(phi);
-                const z = radius * Math.sin(phi) * Math.sin(theta);
+                const z = -radius * Math.sin(phi) * Math.cos(theta);
 
                 points.push(new THREE.Vector3(x, y, z));
             }
