@@ -52,9 +52,9 @@ function SatelliteTrack({ svId, track, color }) {
             key={`${svId}-seg-${i}`}
             points={seg}
             color={color}
-            opacity={0.25}
+            opacity={0.35}
             transparent
-            lineWidth={1}
+            lineWidth={2.5}
         />
     ));
 }
@@ -69,7 +69,7 @@ function snrColor(snr) {
     return '#f87171';
 }
 
-function SatelliteMarker({ svId, el, az, color, snr, isTracked }) {
+function SatelliteMarker({ svId, el, az, color, snr }) {
     const posVec = useMemo(() => elAzToPosition(el, az), [el, az]);
     const position = useMemo(() => [posVec.x, posVec.y, posVec.z], [posVec]);
     const wrapperRef = useRef();
@@ -82,9 +82,6 @@ function SatelliteMarker({ svId, el, az, color, snr, isTracked }) {
         wrapperRef.current.style.display = facing ? '' : 'none';
     });
 
-    const borderColor = isTracked ? color : '#666';
-    const snrBadgeColor = snrColor(snr);
-
     return (
         <Html position={position} center style={{ pointerEvents: 'none' }}>
             <div ref={wrapperRef} style={{
@@ -92,19 +89,18 @@ function SatelliteMarker({ svId, el, az, color, snr, isTracked }) {
                 alignItems: 'center',
                 gap: 3,
                 background: 'rgba(0,0,0,0.5)',
-                border: `1px solid ${borderColor}`,
+                border: `1px solid ${color}`,
                 borderRadius: 4,
                 padding: '1px 5px',
-                color: isTracked ? color : '#666',
+                color,
                 fontSize: 11,
                 fontFamily: 'monospace',
                 fontWeight: 600,
                 whiteSpace: 'nowrap',
-                opacity: isTracked ? 1 : 0.5,
             }}>
                 <span>{svId}</span>
                 {snr != null && (
-                    <span style={{ color: snrBadgeColor, fontSize: 9 }}>
+                    <span style={{ color: snrColor(snr), fontSize: 9 }}>
                         {snr.toFixed(0)}
                     </span>
                 )}
@@ -132,56 +128,58 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
 
     const { satellites } = satelliteData;
 
-    const visibleSvIds = useMemo(() => {
+    const trackedSvIds = useMemo(() => {
         const ids = new Set();
         for (const [svId, sv] of Object.entries(satellites)) {
             if (!constellationFilter[sv.constellation]) continue;
+            if (!sv.observed || sv.observed.length === 0) continue;
             const pos = interpolatePosition(sv.track, epochIndex);
-            if (pos) ids.add(svId);
+            if (!pos) continue;
+            let bestObs = null, bestObsDist = Infinity;
+            for (const point of sv.observed) {
+                const d = Math.abs(point[0] - epochIndex);
+                if (d < bestObsDist) { bestObsDist = d; bestObs = point; }
+            }
+            if (bestObs && bestObsDist <= 1) ids.add(svId);
         }
         return ids;
     }, [satellites, epochIndex, constellationFilter]);
 
-    const visibleSatellites = useMemo(() => {
+    const trackedSatellites = useMemo(() => {
         const result = [];
         for (const [svId, sv] of Object.entries(satellites)) {
-            if (!visibleSvIds.has(svId)) continue;
+            if (!trackedSvIds.has(svId)) continue;
             const pos = interpolatePosition(sv.track, epochIndex);
-            if (pos) {
-                let snr = null;
-                let isTracked = false;
-                if (sv.observed) {
-                    let bestObs = null, bestObsDist = Infinity;
-                    for (const point of sv.observed) {
-                        const d = Math.abs(point[0] - epochIndex);
-                        if (d < bestObsDist) { bestObsDist = d; bestObs = point; }
-                    }
-                    if (bestObs && bestObsDist <= 1) {
-                        isTracked = true;
-                        snr = bestObs[1];
-                    }
+            if (!pos) continue;
+            let snr = null;
+            if (sv.observed) {
+                let bestObs = null, bestObsDist = Infinity;
+                for (const point of sv.observed) {
+                    const d = Math.abs(point[0] - epochIndex);
+                    if (d < bestObsDist) { bestObsDist = d; bestObs = point; }
                 }
-                result.push({
-                    svId,
-                    constellation: sv.constellation,
-                    el: pos.el,
-                    az: pos.az,
-                    snr,
-                    isTracked,
-                    color: CONSTELLATION_COLORS[sv.constellation] || '#ffffff',
-                });
+                if (bestObs && bestObsDist <= 1) snr = bestObs[1];
             }
+            result.push({
+                svId,
+                constellation: sv.constellation,
+                el: pos.el,
+                az: pos.az,
+                snr,
+                color: CONSTELLATION_COLORS[sv.constellation] || '#ffffff',
+            });
         }
         return result;
-    }, [satellites, epochIndex, visibleSvIds]);
+    }, [satellites, epochIndex, trackedSvIds]);
 
     const tracksToRender = useMemo(() => {
         return Object.entries(satellites).filter(([svId, sv]) => {
             if (!constellationFilter[sv.constellation]) return false;
-            if (trackMode === 'active') return visibleSvIds.has(svId);
+            if (!sv.observed || sv.observed.length === 0) return false;
+            if (trackMode === 'active') return trackedSvIds.has(svId);
             return true;
         });
-    }, [satellites, constellationFilter, trackMode, visibleSvIds]);
+    }, [satellites, constellationFilter, trackMode, trackedSvIds]);
 
     return (
         <group>
@@ -193,7 +191,7 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
                     color={CONSTELLATION_COLORS[sv.constellation] || '#ffffff'}
                 />
             ))}
-            {visibleSatellites.map((sat) => (
+            {trackedSatellites.map((sat) => (
                 <SatelliteMarker
                     key={`marker-${sat.svId}`}
                     svId={sat.svId}
@@ -201,7 +199,6 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
                     az={sat.az}
                     color={sat.color}
                     snr={sat.snr}
-                    isTracked={sat.isTracked}
                 />
             ))}
         </group>

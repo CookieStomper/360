@@ -95,9 +95,19 @@ def glonass_propagate(x0, y0, z0, vx0, vy0, vz0, ax0, ay0, az0, dt):
     return state[0], state[1], state[2]
 
 
+SYS_NAMES = {"G": "GPS", "E": "Galileo", "R": "GLONASS", "C": "BeiDou", "J": "QZSS", "S": "SBAS"}
+
+
 def parse_obs_header(f):
     obs_types = {}
     rx_ecef = None
+    meta = {
+        "marker": None,
+        "receiver": None,
+        "antenna": None,
+        "interval": None,
+        "constellations": [],
+    }
     current_sys = None
     for line in f:
         label = line[60:].strip()
@@ -106,13 +116,25 @@ def parse_obs_header(f):
         if label == "APPROX POSITION XYZ":
             parts = line[:60].split()
             rx_ecef = np.array([float(parts[0]), float(parts[1]), float(parts[2])])
+        if label == "MARKER NAME":
+            meta["marker"] = line[:60].strip() or None
+        if label == "REC # / TYPE / VERS":
+            meta["receiver"] = line[20:40].strip() or None
+        if label == "ANT # / TYPE":
+            meta["antenna"] = line[20:40].strip() or None
+        if label == "INTERVAL":
+            try:
+                meta["interval"] = float(line[:60].split()[0])
+            except (ValueError, IndexError):
+                pass
         if label == "SYS / # / OBS TYPES":
             if line[0] != " ":
                 current_sys = line[0]
                 obs_types[current_sys] = line[7:60].split()
             else:
                 obs_types[current_sys].extend(line[7:60].split())
-    return obs_types, rx_ecef
+    meta["constellations"] = [SYS_NAMES.get(s, s) for s in sorted(obs_types.keys())]
+    return obs_types, rx_ecef, meta
 
 
 def find_snr_column(obs_type_list):
@@ -127,7 +149,7 @@ def parse_obs_file(filepath):
     rx_ecef = None
 
     with open(filepath, "r") as f:
-        obs_types, rx_ecef = parse_obs_header(f)
+        obs_types, rx_ecef, meta = parse_obs_header(f)
 
         snr_col = {}
         for sys_char, types in obs_types.items():
@@ -175,7 +197,24 @@ def parse_obs_file(filepath):
 
             epochs[current_epoch_ms][sv_id] = snr
 
-    return epochs, rx_ecef
+    obs_sorted = sorted(epochs.keys())
+    if obs_sorted:
+        gps_epoch_dt = datetime(1980, 1, 6, tzinfo=timezone.utc)
+        from datetime import timedelta
+        start_dt = gps_epoch_dt + timedelta(milliseconds=obs_sorted[0])
+        end_dt = gps_epoch_dt + timedelta(milliseconds=obs_sorted[-1])
+        meta["obsStart"] = start_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        meta["obsEnd"] = end_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        duration_h = (obs_sorted[-1] - obs_sorted[0]) / 3_600_000
+        meta["duration"] = f"{duration_h:.1f}h"
+        meta["obsEpochs"] = len(obs_sorted)
+
+    all_svs = set()
+    for epoch_svs in epochs.values():
+        all_svs.update(epoch_svs.keys())
+    meta["totalSatellites"] = len(all_svs)
+
+    return epochs, rx_ecef, meta
 
 
 def _fix_beidou_gps_week(nav_data):
@@ -377,7 +416,7 @@ def merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs):
 
 def process_files(nav_path, obs_path):
     """Main entry point: process nav + obs files and return result dict."""
-    obs_epochs, rx_ecef = parse_obs_file(obs_path)
+    obs_epochs, rx_ecef, obs_meta = parse_obs_file(obs_path)
 
     if rx_ecef is None:
         raise ValueError("No APPROX POSITION XYZ found in observation file header")
@@ -393,6 +432,7 @@ def process_files(nav_path, obs_path):
             "lon": float(rx_lla[1, 0]),
             "height": float(rx_lla[2, 0]),
         },
+        "observation": obs_meta,
         "epochs": nav_epoch_millis,
         "obsRange": {
             "startIndex": obs_start_idx,

@@ -138,9 +138,6 @@ function App() {
     setConstellationFilter((prev) => ({ ...prev, [name]: !prev[name] }))
   }
 
-  const obsStartTime = satelliteData ? formatEpochTime(satelliteData.epochs[obsStartIdx]) : ''
-  const obsEndTime = satelliteData ? formatEpochTime(satelliteData.epochs[obsEndIdx]) : ''
-
   const availableConstellations = satelliteData
     ? [...new Set(Object.values(satelliteData.satellites).map((s) => s.constellation))]
     : []
@@ -300,13 +297,24 @@ function App() {
               )}
               {satelliteData && !satelliteLoading && (
                 <div className="mb-3 p-2 bg-gray-800/60 rounded text-xs">
-                  <p className="text-green-400 font-medium mb-1">
-                    {Object.keys(satelliteData.satellites).length} satellites loaded
-                  </p>
+                  <p className="text-green-400 font-medium mb-2">Data loaded</p>
                   <div className="text-gray-400 space-y-0.5">
-                    <p><span className="text-gray-500">Obs start:</span> {obsStartTime}</p>
-                    <p><span className="text-gray-500">Obs end:</span> {obsEndTime}</p>
-                    <p><span className="text-gray-500">Duration:</span> {((obsEndIdx - obsStartIdx) * 5 / 60).toFixed(1)}h ({obsEndIdx - obsStartIdx + 1} epochs)</p>
+                    {satelliteData.observation?.marker && (
+                      <p><span className="text-gray-500">Site:</span> {satelliteData.observation.marker}</p>
+                    )}
+                    {satelliteData.observation?.receiver && (
+                      <p><span className="text-gray-500">Receiver:</span> {satelliteData.observation.receiver}</p>
+                    )}
+                    {satelliteData.observation?.antenna && (
+                      <p><span className="text-gray-500">Antenna:</span> {satelliteData.observation.antenna}</p>
+                    )}
+                    <p><span className="text-gray-500">Period:</span> {satelliteData.observation?.obsStart?.slice(11)} – {satelliteData.observation?.obsEnd?.slice(11)}</p>
+                    <p><span className="text-gray-500">Date:</span> {satelliteData.observation?.obsStart?.slice(0, 10)}</p>
+                    <p><span className="text-gray-500">Duration:</span> {satelliteData.observation?.duration}</p>
+                    {satelliteData.observation?.interval && (
+                      <p><span className="text-gray-500">Interval:</span> {satelliteData.observation.interval}s</p>
+                    )}
+                    <p><span className="text-gray-500">Satellites:</span> {satelliteData.observation?.totalSatellites} ({satelliteData.observation?.constellations?.join(', ')})</p>
                   </div>
                 </div>
               )}
