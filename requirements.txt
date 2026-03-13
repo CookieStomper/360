@@ -1,0 +1,5 @@
+flask>=3.0
+flask-cors>=4.0
+gunicorn>=21.0
+numpy>=1.24
+gnss_lib_py>=1.0

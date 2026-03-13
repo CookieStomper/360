@@ -1,27 +1,28 @@
-# Stage 1: Build
-FROM node:20-alpine as build
+# Stage 1: Build frontend
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Copy package files first to leverage cache
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json* ./
 RUN npm ci
 
-# Copy source code
 COPY . .
-
-# Build the application
 RUN npm run build
 
-# Stage 2: Serve
-FROM nginx:alpine
+# Stage 2: Runtime with Python backend
+FROM python:3.12-slim
 
-# Copy built assets from build stage
-COPY --from=build /app/dist /usr/share/nginx/html
+WORKDIR /app
 
-# Copy custom nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy built frontend
+COPY --from=build /app/dist ./dist
+
+# Copy backend
+COPY requirements.txt ./
+COPY scripts ./scripts
+
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["gunicorn", "--bind", "0.0.0.0:80", "--chdir", "/app/scripts", "server:app"]

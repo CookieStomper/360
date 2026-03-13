@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+__pycache__
+*.pyc
+.env
+.env.*
+Input
+*.md
+!README.md
+.cursor
+diagnose_output.txt
+scripts/diagnose_tracks.py

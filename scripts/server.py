@@ -3,6 +3,7 @@
 Flask API server for GNSS file processing.
 Accepts RINEX nav + obs file uploads, streams progress via SSE,
 and returns satellite data JSON.
+In production (when dist/ exists), also serves the built frontend.
 """
 
 import json
@@ -11,9 +12,13 @@ import queue
 import tempfile
 import threading
 
-from flask import Flask, Response, request, jsonify
+from flask import Flask, Response, request, jsonify, send_from_directory
 from flask_cors import CORS
 from process_gnss import process_files
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ROOT = os.path.dirname(SCRIPT_DIR)
+DIST_DIR = os.path.join(APP_ROOT, "dist")
 
 app = Flask(__name__)
 CORS(app)
@@ -72,6 +77,15 @@ def process():
                 break
 
     return Response(generate(), mimetype="text/event-stream")
+
+
+if os.path.isdir(DIST_DIR):
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def serve_spa(path):
+        if path and os.path.exists(os.path.join(DIST_DIR, path)):
+            return send_from_directory(DIST_DIR, path)
+        return send_from_directory(DIST_DIR, "index.html")
 
 
 if __name__ == "__main__":
