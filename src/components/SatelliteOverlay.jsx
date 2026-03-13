@@ -22,37 +22,94 @@ function elAzToPosition(el, az) {
     );
 }
 
-function SatelliteTrack({ svId, track, color }) {
-    const points = useMemo(() => {
-        const segments = [];
-        let currentSegment = [];
+function valueToColor(value, min, max, invert) {
+    const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+    const ratio = invert ? 1 - t : t;
+    const r = ratio < 0.5 ? 1 : 1 - 2 * (ratio - 0.5);
+    const g = ratio < 0.5 ? 2 * ratio : 1;
+    return new THREE.Color(r, g, 0.15);
+}
+
+function getTrackVertexColors(track, observed, colorMode, constellation) {
+    if (colorMode === 'constellation') return null;
+
+    const obsMap = new Map();
+    if (observed) {
+        for (const point of observed) {
+            obsMap.set(point[0], { snr: point[1], mp: point[2] ?? null });
+        }
+    }
+
+    const colors = [];
+    for (const [epochIdx, el] of track) {
+        if (el <= 0) continue;
+        const obs = obsMap.get(epochIdx);
+        let color;
+        if (colorMode === 'snr') {
+            const snr = obs?.snr;
+            color = snr != null ? valueToColor(snr, 15, 50, false) : new THREE.Color(0.3, 0.3, 0.3);
+        } else {
+            const mp = obs?.mp;
+            color = mp != null ? valueToColor(mp, 0, 3, true) : new THREE.Color(0.3, 0.3, 0.3);
+        }
+        colors.push(color);
+    }
+    return colors;
+}
+
+function SatelliteTrack({ svId, track, color, observed, colorMode, constellation }) {
+    const { segments, segColors } = useMemo(() => {
+        const segs = [];
+        const sColors = [];
+        let currentSeg = [];
+        let currentColors = [];
+        const vertexColors = getTrackVertexColors(track, observed, colorMode, constellation);
+        let colorIdx = 0;
 
         for (let i = 0; i < track.length; i++) {
             const [t, el, az] = track[i];
             if (el <= 0) {
-                if (currentSegment.length >= 2) segments.push(currentSegment);
-                currentSegment = [];
+                if (currentSeg.length >= 2) {
+                    segs.push(currentSeg);
+                    sColors.push(currentColors);
+                }
+                currentSeg = [];
+                currentColors = [];
                 continue;
             }
             const pos = elAzToPosition(el, az);
-            currentSegment.push(pos);
+            currentSeg.push(pos);
+            if (vertexColors) currentColors.push(vertexColors[colorIdx]);
+            colorIdx++;
 
             const nextT = i < track.length - 1 ? track[i + 1][0] : null;
             if (nextT !== null && nextT - t > 3) {
-                if (currentSegment.length >= 2) segments.push(currentSegment);
-                currentSegment = [];
+                if (currentSeg.length >= 2) {
+                    segs.push(currentSeg);
+                    sColors.push(currentColors);
+                }
+                currentSeg = [];
+                currentColors = [];
             }
         }
-        if (currentSegment.length >= 2) segments.push(currentSegment);
-        return segments;
-    }, [track]);
+        if (currentSeg.length >= 2) {
+            segs.push(currentSeg);
+            sColors.push(currentColors);
+        }
+        return { segments: segs, segColors: sColors };
+    }, [track, colorMode, observed, constellation]);
 
-    return points.map((seg, i) => (
+    const useVertexColors = colorMode !== 'constellation';
+
+    return segments.map((seg, i) => (
         <Line
             key={`${svId}-seg-${i}`}
             points={seg}
-            color={color}
-            opacity={0.35}
+            color={useVertexColors ? 'white' : color}
+            vertexColors={useVertexColors && segColors[i]?.length === seg.length
+                ? segColors[i].map(c => [c.r, c.g, c.b])
+                : undefined}
+            opacity={0.45}
             transparent
             lineWidth={2.5}
         />
@@ -69,7 +126,14 @@ function snrColor(snr) {
     return '#f87171';
 }
 
-function SatelliteMarker({ svId, el, az, color, snr }) {
+function mpColor(mp) {
+    if (mp == null) return '#888';
+    if (mp < 0.5) return '#4ade80';
+    if (mp < 2) return '#facc15';
+    return '#f87171';
+}
+
+function SatelliteMarker({ svId, el, az, color, snr, mp, trackColorMode }) {
     const posVec = useMemo(() => elAzToPosition(el, az), [el, az]);
     const position = useMemo(() => [posVec.x, posVec.y, posVec.z], [posVec]);
     const wrapperRef = useRef();
@@ -81,6 +145,12 @@ function SatelliteMarker({ svId, el, az, color, snr }) {
         const facing = _camDir.dot(_satDir) > 0;
         wrapperRef.current.style.display = facing ? '' : 'none';
     });
+
+    const showValue = trackColorMode === 'multipath' ? mp : snr;
+    const valueColor = trackColorMode === 'multipath' ? mpColor(mp) : snrColor(snr);
+    const valueLabel = trackColorMode === 'multipath'
+        ? (mp != null ? mp.toFixed(1) : null)
+        : (snr != null ? snr.toFixed(0) : null);
 
     return (
         <Html position={position} center style={{ pointerEvents: 'none' }}>
@@ -99,9 +169,9 @@ function SatelliteMarker({ svId, el, az, color, snr }) {
                 whiteSpace: 'nowrap',
             }}>
                 <span>{svId}</span>
-                {snr != null && (
-                    <span style={{ color: snrColor(snr), fontSize: 9 }}>
-                        {snr.toFixed(0)}
+                {valueLabel != null && (
+                    <span style={{ color: valueColor, fontSize: 9 }}>
+                        {valueLabel}
                     </span>
                 )}
             </div>
@@ -123,7 +193,63 @@ function interpolatePosition(track, epochIndex) {
     return { el: best[1], az: best[2] };
 }
 
-const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trackMode }) => {
+function HeatmapCell({ pos, width, height, color }) {
+    const meshRef = useRef();
+    const origin = useMemo(() => new THREE.Vector3(0, 0, 0), []);
+
+    useFrame(() => {
+        if (meshRef.current) {
+            meshRef.current.lookAt(origin);
+        }
+    });
+
+    return (
+        <mesh ref={meshRef} position={[pos.x, pos.y, pos.z]}>
+            <planeGeometry args={[width, height]} />
+            <meshBasicMaterial
+                color={color}
+                transparent
+                opacity={0.25}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+            />
+        </mesh>
+    );
+}
+
+function HeatmapOverlayOptimized({ heatmapData }) {
+    const cells = useMemo(() => {
+        if (!heatmapData?.bins?.length) return [];
+        const { azStep, elStep, bins } = heatmapData;
+        const azRad = THREE.MathUtils.degToRad(azStep);
+        const elRad = THREE.MathUtils.degToRad(elStep);
+
+        return bins.map(([azCenter, elCenter, snr]) => {
+            const pos = elAzToPosition(elCenter, azCenter);
+            const phi = THREE.MathUtils.degToRad(90 - elCenter);
+            const widthAtEl = Math.max(5, RADIUS * Math.sin(phi) * azRad);
+            const height = RADIUS * elRad;
+            const color = valueToColor(snr, 15, 50, false);
+            return { pos, width: widthAtEl, height, color };
+        });
+    }, [heatmapData]);
+
+    return (
+        <group>
+            {cells.map((cell, i) => (
+                <HeatmapCell
+                    key={i}
+                    pos={cell.pos}
+                    width={cell.width}
+                    height={cell.height}
+                    color={cell.color}
+                />
+            ))}
+        </group>
+    );
+}
+
+const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trackMode, trackColorMode, showHeatmap }) => {
     if (!satelliteData) return null;
 
     const { satellites } = satelliteData;
@@ -152,13 +278,17 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
             const pos = interpolatePosition(sv.track, epochIndex);
             if (!pos) continue;
             let snr = null;
+            let mp = null;
             if (sv.observed) {
                 let bestObs = null, bestObsDist = Infinity;
                 for (const point of sv.observed) {
                     const d = Math.abs(point[0] - epochIndex);
                     if (d < bestObsDist) { bestObsDist = d; bestObs = point; }
                 }
-                if (bestObs && bestObsDist <= 1) snr = bestObs[1];
+                if (bestObs && bestObsDist <= 1) {
+                    snr = bestObs[1];
+                    mp = bestObs[2] ?? null;
+                }
             }
             result.push({
                 svId,
@@ -166,6 +296,7 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
                 el: pos.el,
                 az: pos.az,
                 snr,
+                mp,
                 color: CONSTELLATION_COLORS[sv.constellation] || '#ffffff',
             });
         }
@@ -185,10 +316,13 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
         <group>
             {tracksToRender.map(([svId, sv]) => (
                 <SatelliteTrack
-                    key={`track-${svId}`}
+                    key={`track-${svId}-${trackColorMode}`}
                     svId={svId}
                     track={sv.track}
                     color={CONSTELLATION_COLORS[sv.constellation] || '#ffffff'}
+                    observed={sv.observed}
+                    colorMode={trackColorMode}
+                    constellation={sv.constellation}
                 />
             ))}
             {trackedSatellites.map((sat) => (
@@ -199,8 +333,13 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
                     az={sat.az}
                     color={sat.color}
                     snr={sat.snr}
+                    mp={sat.mp}
+                    trackColorMode={trackColorMode}
                 />
             ))}
+            {showHeatmap && satelliteData.snrHeatmap && (
+                <HeatmapOverlayOptimized heatmapData={satelliteData.snrHeatmap} />
+            )}
         </group>
     );
 };

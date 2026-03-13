@@ -82,30 +82,63 @@ function App() {
   const [satelliteData, setSatelliteData] = useState(null)
   const [satelliteLoading, setSatelliteLoading] = useState(false)
   const [satelliteError, setSatelliteError] = useState(null)
+  const [progressMessage, setProgressMessage] = useState('')
+  const [progressPercent, setProgressPercent] = useState(null)
   const [epochIndex, setEpochIndex] = useState(0)
   const [constellationFilter, setConstellationFilter] = useState(DEFAULT_CONSTELLATION_FILTER)
   const [isPlaying, setIsPlaying] = useState(false)
   const [trackMode, setTrackMode] = useState('all')
+  const [trackColorMode, setTrackColorMode] = useState('constellation')
+  const [showHeatmap, setShowHeatmap] = useState(false)
   const [lookAtTarget, setLookAtTarget] = useState(null)
 
   const processRinexFiles = useCallback(async () => {
     if (!navFile || !obsFile) return
     setSatelliteLoading(true)
     setSatelliteError(null)
+    setProgressMessage('Uploading files...')
+    setProgressPercent(null)
     try {
       const formData = new FormData()
       formData.append('nav', navFile)
       formData.append('obs', obsFile)
       const res = await fetch('/api/process', { method: 'POST', body: formData })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Processing failed')
-      setSatelliteData(data)
-      setEpochIndex(data.obsRange?.startIndex ?? 0)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let eventType = null
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7)
+          else if (line.startsWith('data: ') && eventType) {
+            const payload = JSON.parse(line.slice(6))
+            if (eventType === 'progress') {
+              setProgressMessage(payload.message)
+              if (payload.percent != null) setProgressPercent(payload.percent)
+            } else if (eventType === 'result') {
+              setSatelliteData(payload)
+              setEpochIndex(payload.obsRange?.startIndex ?? 0)
+            } else if (eventType === 'error') {
+              throw new Error(payload.error)
+            }
+            eventType = null
+          }
+        }
+      }
     } catch (err) {
       console.error('Failed to process RINEX files:', err)
       setSatelliteError(err.message)
     } finally {
       setSatelliteLoading(false)
+      setProgressMessage('')
+      setProgressPercent(null)
     }
   }, [navFile, obsFile])
 
@@ -161,6 +194,7 @@ function App() {
       }
 
       let snr = null
+      let mp = null
       let isTracked = false
       if (sv.observed) {
         let best = null, bestDist = Infinity
@@ -171,6 +205,7 @@ function App() {
         if (best && bestDist <= 1) {
           isTracked = true
           snr = best[1]
+          mp = best[2] ?? null
         }
       }
 
@@ -181,6 +216,7 @@ function App() {
         el: elAz.el,
         az: elAz.az,
         snr,
+        mp,
         isTracked,
       })
     }
@@ -292,6 +328,19 @@ function App() {
               >
                 {satelliteLoading ? 'Processing...' : 'Process GNSS Data'}
               </button>
+              {satelliteLoading && (
+                <div className="mb-2">
+                  <p className="text-xs text-gray-400 mb-1">{progressMessage}</p>
+                  {progressPercent != null && (
+                    <div className="w-full bg-gray-700 rounded-full h-1.5">
+                      <div
+                        className="bg-violet-500 h-1.5 rounded-full transition-all duration-300"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
               {satelliteError && (
                 <p className="text-xs text-red-400 mb-2">{satelliteError}</p>
               )}
@@ -338,6 +387,39 @@ function App() {
                         </button>
                       ))}
                     </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-sm text-gray-400">Color</label>
+                    <div className="flex gap-1">
+                      {[
+                        ['constellation', 'Const'],
+                        ['snr', 'SNR'],
+                        ['multipath', 'MP'],
+                      ].map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          onClick={() => setTrackColorMode(mode)}
+                          className={`text-xs px-2 py-1 rounded transition-all ${
+                            trackColorMode === mode
+                              ? 'bg-violet-600 text-white'
+                              : 'bg-gray-700 text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-sm text-gray-400">SNR Heat Map</label>
+                    <input
+                      type="checkbox"
+                      checked={showHeatmap}
+                      onChange={(e) => setShowHeatmap(e.target.checked)}
+                      className="w-4 h-4 text-violet-600 bg-gray-700 border-gray-600 rounded focus:ring-violet-500 focus:ring-2"
+                    />
                   </div>
 
                   <div className="mb-3">
@@ -431,6 +513,7 @@ function App() {
                 <th className="text-right py-1 font-medium">El°</th>
                 <th className="text-right py-1 font-medium">Az°</th>
                 <th className="text-right py-1 font-medium">SNR</th>
+                <th className="text-right py-1 font-medium">MP</th>
               </tr>
             </thead>
             <tbody>
@@ -452,6 +535,16 @@ function App() {
                       {sat.snr != null ? sat.snr.toFixed(0) : '—'}
                     </span>
                   </td>
+                  <td className="py-1 text-right font-mono">
+                    {sat.mp != null ? (
+                      <span className={
+                        sat.mp < 0.5 ? 'text-green-400' :
+                        sat.mp < 2 ? 'text-yellow-400' : 'text-red-400'
+                      }>
+                        {sat.mp.toFixed(1)}
+                      </span>
+                    ) : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -469,6 +562,8 @@ function App() {
             epochIndex={epochIndex}
             constellationFilter={constellationFilter}
             trackMode={trackMode}
+            trackColorMode={trackColorMode}
+            showHeatmap={showHeatmap}
             lookAtTarget={lookAtTarget}
           />
         ) : (

@@ -30,6 +30,7 @@ STEP_MINUTES = 5
 GPS_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 
 BDT_WEEK_OFFSET = 1356
+GAL_WEEK_OFFSET = 1024
 
 # GLONASS orbital propagation constants (PZ-90)
 _GLO_MU = 3.9860044e14        # m^3/s^2
@@ -137,11 +138,33 @@ def parse_obs_header(f):
     return obs_types, rx_ecef, meta
 
 
-def find_snr_column(obs_type_list):
+SPEED_OF_LIGHT = 299792458.0
+L1_WAVELENGTHS = {
+    "G": SPEED_OF_LIGHT / 1575.42e6,   # GPS L1
+    "E": SPEED_OF_LIGHT / 1575.42e6,   # Galileo E1
+    "R": SPEED_OF_LIGHT / 1602.0e6,    # GLONASS L1 (nominal center)
+    "C": SPEED_OF_LIGHT / 1561.098e6,  # BeiDou B1
+}
+
+
+def _find_column(obs_type_list, prefix):
+    """Find the first column index whose type starts with the given prefix."""
     for i, ot in enumerate(obs_type_list):
-        if ot.startswith("S"):
+        if ot.startswith(prefix):
             return i
     return None
+
+
+def _read_obs_value(line, col_idx):
+    val_start = 3 + col_idx * 16
+    val_end = val_start + 14
+    if val_end > len(line):
+        return None
+    raw = line[val_start:val_end].strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
 
 
 def parse_obs_file(filepath):
@@ -151,11 +174,13 @@ def parse_obs_file(filepath):
     with open(filepath, "r") as f:
         obs_types, rx_ecef, meta = parse_obs_header(f)
 
-        snr_col = {}
+        columns = {}
         for sys_char, types in obs_types.items():
-            idx = find_snr_column(types)
-            if idx is not None:
-                snr_col[sys_char] = idx
+            columns[sys_char] = {
+                "snr": _find_column(types, "S"),
+                "code": _find_column(types, "C1") if _find_column(types, "C1") is not None else _find_column(types, "C"),
+                "phase": _find_column(types, "L1") if _find_column(types, "L1") is not None else _find_column(types, "L"),
+            }
 
         current_epoch_ms = None
 
@@ -180,22 +205,15 @@ def parse_obs_file(filepath):
                 continue
 
             sys_char = sv_id[0]
-            if sys_char not in snr_col:
+            cols = columns.get(sys_char)
+            if not cols or cols["snr"] is None:
                 continue
 
-            col_idx = snr_col[sys_char]
-            val_start = 3 + col_idx * 16
-            val_end = val_start + 14
-            if val_end > len(line):
-                snr = None
-            else:
-                raw = line[val_start:val_end].strip()
-                try:
-                    snr = float(raw) if raw else None
-                except ValueError:
-                    snr = None
+            snr = _read_obs_value(line, cols["snr"])
+            code = _read_obs_value(line, cols["code"]) if cols["code"] is not None else None
+            phase = _read_obs_value(line, cols["phase"]) if cols["phase"] is not None else None
 
-            epochs[current_epoch_ms][sv_id] = snr
+            epochs[current_epoch_ms][sv_id] = (snr, code, phase)
 
     obs_sorted = sorted(epochs.keys())
     if obs_sorted:
@@ -217,14 +235,54 @@ def parse_obs_file(filepath):
     return epochs, rx_ecef, meta
 
 
-def _fix_beidou_gps_week(nav_data):
-    """Populate gps_week from BDTWeek for BeiDou satellites."""
-    beidou_mask = nav_data["gnss_id"] == "beidou"
-    if not np.any(beidou_mask):
-        return nav_data
-    bdt_weeks = nav_data["BDTWeek"].astype(float)
+def compute_cmc(obs_epochs):
+    """
+    Compute detrended code-minus-carrier (CMC) multipath indicator per SV.
+    Returns {sv_id: {epoch_ms: mp_value}} where mp_value is in meters.
+    """
+    raw_cmc = {}
+    for epoch_ms, svs in obs_epochs.items():
+        for sv_id, (snr, code, phase) in svs.items():
+            if code is None or phase is None:
+                continue
+            wl = L1_WAVELENGTHS.get(sv_id[0])
+            if wl is None:
+                continue
+            cmc = code - phase * wl
+            raw_cmc.setdefault(sv_id, []).append((epoch_ms, cmc))
+
+    for sv_id in raw_cmc:
+        raw_cmc[sv_id].sort(key=lambda x: x[0])
+
+    mp_result = {}
+    WINDOW = 5
+    for sv_id, series in raw_cmc.items():
+        if len(series) < 3:
+            continue
+        values = np.array([v for _, v in series])
+        smoothed = np.convolve(values, np.ones(WINDOW) / WINDOW, mode="same")
+        detrended = np.abs(values - smoothed)
+        mp_result[sv_id] = {}
+        for i, (epoch_ms, _) in enumerate(series):
+            mp_result[sv_id][epoch_ms] = round(float(detrended[i]), 3)
+
+    return mp_result
+
+
+def _fix_constellation_gps_weeks(nav_data):
+    """Populate gps_week from constellation-specific week fields."""
     gps_weeks = nav_data["gps_week"].astype(float)
-    gps_weeks[beidou_mask] = bdt_weeks[beidou_mask] + BDT_WEEK_OFFSET
+
+    beidou_mask = nav_data["gnss_id"] == "beidou"
+    if np.any(beidou_mask):
+        bdt_weeks = nav_data["BDTWeek"].astype(float)
+        gps_weeks[beidou_mask] = bdt_weeks[beidou_mask] + BDT_WEEK_OFFSET
+
+    galileo_mask = nav_data["gnss_id"] == "galileo"
+    if np.any(galileo_mask):
+        gal_weeks = nav_data["GALWeek"].astype(float)
+        gps_weeks[galileo_mask] = gal_weeks[galileo_mask] + GAL_WEEK_OFFSET
+
     nav_data["gps_week"] = gps_weeks
     return nav_data
 
@@ -252,7 +310,7 @@ def _glonass_positions_at_epoch(glo_nav, glo_index, epoch_ms):
     by propagating from the closest ephemeris using RK4.
     Returns list of (sv_id, x, y, z).
     """
-    MAX_DT = 900  # max 15 minutes from reference epoch
+    MAX_DT = 16200  # max ~4.5 hours from reference epoch (handles sparse ephemeris)
     results = []
 
     for sv, records in glo_index.items():
@@ -286,11 +344,69 @@ def _glonass_positions_at_epoch(glo_nav, glo_index, epoch_ms):
     return results
 
 
-def compute_nav_el_az(nav_file, rx_ecef):
-    rinex_nav = glp.RinexNav(nav_file)
+SUPPORTED_SYS = {"G", "E", "R", "C"}
+NAV_RECORD_LINES = {"G": 8, "E": 8, "R": 4, "C": 8, "J": 8, "I": 8, "S": 4}
+
+
+def _filter_nav_file(nav_path):
+    """
+    Filter a RINEX 3 nav file to only keep supported constellations (G/E/R/C).
+    Returns path to a filtered temp file, or the original if no filtering needed.
+    """
+    import tempfile
+
+    with open(nav_path, "r") as f:
+        lines = f.readlines()
+
+    header_end = 0
+    for i, line in enumerate(lines):
+        if "END OF HEADER" in line:
+            header_end = i + 1
+            break
+
+    unsupported = set()
+    i = header_end
+    while i < len(lines):
+        line = lines[i]
+        if len(line) >= 1 and line[0].isalpha() and line[0] not in SUPPORTED_SYS:
+            unsupported.add(line[0])
+        i += 1
+
+    if not unsupported:
+        return nav_path
+
+    filtered = lines[:header_end]
+    i = header_end
+    while i < len(lines):
+        line = lines[i]
+        if len(line) >= 1 and line[0].isalpha():
+            sys_char = line[0]
+            n_lines = NAV_RECORD_LINES.get(sys_char, 8)
+            if sys_char in SUPPORTED_SYS:
+                filtered.extend(lines[i:i + n_lines])
+            i += n_lines
+        else:
+            i += 1
+
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".rnx", delete=False)
+    tmp.writelines(filtered)
+    tmp.close()
+    return tmp.name
+
+
+def compute_nav_el_az(nav_file, rx_ecef, on_progress=None):
+    if on_progress:
+        on_progress("Parsing navigation file...")
+    filtered_path = _filter_nav_file(nav_file)
+    try:
+        rinex_nav = glp.RinexNav(filtered_path)
+    finally:
+        if filtered_path != nav_file:
+            import os
+            os.unlink(filtered_path)
     nav_gnss_ids = set(rinex_nav["gnss_id"])
 
-    _fix_beidou_gps_week(rinex_nav)
+    _fix_constellation_gps_weeks(rinex_nav)
 
     keplerian_ids = {"gps", "galileo", "beidou"} & nav_gnss_ids
     keplerian_nav = rinex_nav.where("gnss_id", list(keplerian_ids)) if keplerian_ids else None
@@ -304,11 +420,19 @@ def compute_nav_el_az(nav_file, rx_ecef):
     t_end = float(np.nanmax(all_millis))
     step_ms = STEP_MINUTES * 60 * 1000
     epoch_millis_list = np.arange(t_start, t_end, step_ms).tolist()
+    total_epochs = len(epoch_millis_list)
+
+    if on_progress:
+        on_progress(f"Computing satellite positions ({total_epochs} epochs)...")
 
     el_az_data = {}
 
     for epoch_idx, ms in enumerate(epoch_millis_list):
-        positions = []  # list of (gnss_id, sv_id, x, y, z)
+        if on_progress and epoch_idx % 10 == 0:
+            pct = int(epoch_idx / total_epochs * 100)
+            on_progress(f"Computing epoch {epoch_idx}/{total_epochs} ({pct}%)", pct)
+
+        positions = []
 
         if keplerian_nav is not None:
             try:
@@ -362,10 +486,12 @@ def compute_nav_el_az(nav_file, rx_ecef):
     return el_az_data, epoch_millis_list
 
 
-def merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs):
+def merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs, mp_data=None):
     obs_by_nav_epoch = {}
     obs_millis_sorted = sorted(obs_epochs.keys())
     half_step = STEP_MINUTES * 60 * 1000 / 2
+
+    obs_ms_by_nav_idx = {}
 
     for obs_ms in obs_millis_sorted:
         best_nav_idx = None
@@ -378,13 +504,22 @@ def merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs):
         if best_dist <= half_step:
             if best_nav_idx not in obs_by_nav_epoch or best_dist < obs_by_nav_epoch[best_nav_idx][1]:
                 obs_by_nav_epoch[best_nav_idx] = (obs_epochs[obs_ms], best_dist)
+                obs_ms_by_nav_idx[best_nav_idx] = obs_ms
 
     tracked = {}
     for nav_idx, (epoch_obs, _) in obs_by_nav_epoch.items():
-        for sv_id, snr in epoch_obs.items():
+        obs_ms = obs_ms_by_nav_idx.get(nav_idx)
+        for sv_id, (snr, _code, _phase) in epoch_obs.items():
             if sv_id not in tracked:
                 tracked[sv_id] = []
-            tracked[sv_id].append([nav_idx, round(snr, 1) if snr is not None else None])
+            mp_val = None
+            if mp_data and sv_id in mp_data and obs_ms in mp_data[sv_id]:
+                mp_val = mp_data[sv_id][obs_ms]
+            tracked[sv_id].append([
+                nav_idx,
+                round(snr, 1) if snr is not None else None,
+                mp_val,
+            ])
 
     for sv_data in tracked.values():
         sv_data.sort(key=lambda p: p[0])
@@ -405,25 +540,83 @@ def merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs):
             prefix = sv_id[0]
             constellation = {"G": "GPS", "E": "Galileo", "R": "GLONASS", "C": "BeiDou"}.get(prefix, prefix)
 
+        track = nav_info["track"] if nav_info else []
+        # Clip track to observation range so we don't render orphan segments
+        track = [p for p in track if obs_start_idx <= p[0] <= obs_end_idx]
+
         satellites[sv_id] = {
             "constellation": constellation,
-            "track": nav_info["track"] if nav_info else [],
+            "track": track,
             "observed": obs_info if obs_info else [],
         }
 
     return satellites, obs_start_idx, obs_end_idx
 
 
-def process_files(nav_path, obs_path):
+def compute_snr_heatmap(satellites, az_step=10, el_step=5):
+    """
+    Aggregate SNR by azimuth/elevation bins across all epochs.
+    Returns dict with bin config and bin data.
+    """
+    bins = {}
+
+    for sv_id, sv in satellites.items():
+        if not sv["track"] or not sv["observed"]:
+            continue
+
+        track_by_epoch = {p[0]: (p[1], p[2]) for p in sv["track"]}
+
+        for obs_point in sv["observed"]:
+            epoch_idx = obs_point[0]
+            snr = obs_point[1]
+            if snr is None or epoch_idx not in track_by_epoch:
+                continue
+            el, az = track_by_epoch[epoch_idx]
+            if el <= 0:
+                continue
+
+            az_bin = int(az // az_step) * az_step + az_step // 2
+            el_bin = int(el // el_step) * el_step + el_step // 2
+            key = (az_bin, el_bin)
+            if key not in bins:
+                bins[key] = []
+            bins[key].append(snr)
+
+    result = []
+    for (az_c, el_c), values in bins.items():
+        result.append([az_c, el_c, round(float(np.mean(values)), 1)])
+
+    return {
+        "azStep": az_step,
+        "elStep": el_step,
+        "bins": result,
+    }
+
+
+def process_files(nav_path, obs_path, on_progress=None):
     """Main entry point: process nav + obs files and return result dict."""
+    if on_progress:
+        on_progress("Parsing observation file...")
     obs_epochs, rx_ecef, obs_meta = parse_obs_file(obs_path)
 
     if rx_ecef is None:
         raise ValueError("No APPROX POSITION XYZ found in observation file header")
 
-    el_az_data, nav_epoch_millis = compute_nav_el_az(nav_path, rx_ecef)
+    if on_progress:
+        on_progress("Computing multipath indicators...", 5)
+    mp_data = compute_cmc(obs_epochs)
 
-    satellites, obs_start_idx, obs_end_idx = merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs)
+    el_az_data, nav_epoch_millis = compute_nav_el_az(nav_path, rx_ecef, on_progress)
+
+    if on_progress:
+        on_progress("Merging observation data...", 95)
+    satellites, obs_start_idx, obs_end_idx = merge_nav_obs(
+        el_az_data, nav_epoch_millis, obs_epochs, mp_data
+    )
+
+    if on_progress:
+        on_progress("Computing SNR heatmap...", 98)
+    snr_heatmap = compute_snr_heatmap(satellites)
 
     rx_lla = glp.ecef_to_geodetic(rx_ecef.reshape(3, 1))
     return {
@@ -439,4 +632,5 @@ def process_files(nav_path, obs_path):
             "endIndex": obs_end_idx,
         },
         "satellites": satellites,
+        "snrHeatmap": snr_heatmap,
     }
