@@ -57,47 +57,66 @@ function getTrackVertexColors(track, observed, colorMode, constellation) {
     return colors;
 }
 
-function SatelliteTrack({ svId, track, color, observed, colorMode, constellation }) {
+function clipSegmentToRange(seg, segColors, segEpochs, obsStartIdx, obsEndIdx) {
+    const keep = segEpochs.map((e) => e >= obsStartIdx && e <= obsEndIdx);
+    const clippedSeg = seg.filter((_, i) => keep[i]);
+    const clippedColors = segColors?.filter((_, i) => keep[i]);
+    return clippedSeg.length >= 2 ? { seg: clippedSeg, colors: clippedColors } : null;
+}
+
+function SatelliteTrack({ svId, track, color, observed, colorMode, constellation, obsStartIdx, obsEndIdx, epochIndex }) {
     const { segments, segColors } = useMemo(() => {
+        const observedEpochs = new Set(observed?.map((p) => p[0]) ?? []);
         const segs = [];
         const sColors = [];
         let currentSeg = [];
         let currentColors = [];
+        let currentEpochs = [];
         const vertexColors = getTrackVertexColors(track, observed, colorMode, constellation);
         let colorIdx = 0;
+        const obsStart = obsStartIdx ?? 0;
+        const obsEnd = obsEndIdx ?? 0;
+
+        const pushSegment = () => {
+            if (currentSeg.length < 2) return;
+            const hasObs = currentEpochs.some((e) => observedEpochs.has(e));
+            if (!hasObs) return;
+            const segMin = Math.min(...currentEpochs);
+            const segMax = Math.max(...currentEpochs);
+            if (epochIndex < segMin - 1 || epochIndex > segMax + 1) return;
+            const clipped = clipSegmentToRange(currentSeg, currentColors, currentEpochs, obsStart, obsEnd);
+            if (clipped) {
+                segs.push(clipped.seg);
+                sColors.push(clipped.colors);
+            }
+        };
 
         for (let i = 0; i < track.length; i++) {
             const [t, el, az] = track[i];
             if (el <= 0) {
-                if (currentSeg.length >= 2) {
-                    segs.push(currentSeg);
-                    sColors.push(currentColors);
-                }
+                pushSegment();
                 currentSeg = [];
                 currentColors = [];
+                currentEpochs = [];
                 continue;
             }
             const pos = elAzToPosition(el, az);
             currentSeg.push(pos);
+            currentEpochs.push(t);
             if (vertexColors) currentColors.push(vertexColors[colorIdx]);
             colorIdx++;
 
             const nextT = i < track.length - 1 ? track[i + 1][0] : null;
             if (nextT !== null && nextT - t > 3) {
-                if (currentSeg.length >= 2) {
-                    segs.push(currentSeg);
-                    sColors.push(currentColors);
-                }
+                pushSegment();
                 currentSeg = [];
                 currentColors = [];
+                currentEpochs = [];
             }
         }
-        if (currentSeg.length >= 2) {
-            segs.push(currentSeg);
-            sColors.push(currentColors);
-        }
+        pushSegment();
         return { segments: segs, segColors: sColors };
-    }, [track, colorMode, observed, constellation]);
+    }, [track, colorMode, observed, constellation, obsStartIdx, obsEndIdx, epochIndex]);
 
     const useVertexColors = colorMode !== 'constellation';
 
@@ -249,7 +268,7 @@ function HeatmapOverlayOptimized({ heatmapData }) {
     );
 }
 
-const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trackMode, trackColorMode, showHeatmap }) => {
+const SatelliteOverlay = ({ satelliteData, epochIndex, obsStartIdx, obsEndIdx, constellationFilter, trackMode, trackColorMode, showHeatmap }) => {
     if (!satelliteData) return null;
 
     const { satellites } = satelliteData;
@@ -316,13 +335,16 @@ const SatelliteOverlay = ({ satelliteData, epochIndex, constellationFilter, trac
         <group>
             {tracksToRender.map(([svId, sv]) => (
                 <SatelliteTrack
-                    key={`track-${svId}-${trackColorMode}`}
+                    key={`track-${svId}-${trackColorMode}-${epochIndex}`}
                     svId={svId}
                     track={sv.track}
                     color={CONSTELLATION_COLORS[sv.constellation] || '#ffffff'}
                     observed={sv.observed}
                     colorMode={trackColorMode}
                     constellation={sv.constellation}
+                    obsStartIdx={obsStartIdx ?? 0}
+                    obsEndIdx={obsEndIdx ?? 0}
+                    epochIndex={epochIndex}
                 />
             ))}
             {trackedSatellites.map((sat) => (

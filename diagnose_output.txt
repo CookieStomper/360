@@ -1,0 +1,31 @@
+Loading...
+Obs range: 112 - 401
+
+=== G04 ===
+  track: 169 pts
+  observed: 91 pts, epochs 172-341
+  track pts with obs: 91 / 169
+  segments: 3, would_render: 2
+    seg 0: epochs 0-55 (56 pts), el=0-75, az=83-194, has_obs=False
+    seg 1: epochs 154-191 (38 pts), el=0-17, az=295-360, has_obs=True
+    seg 2: epochs 268-342 (75 pts), el=1-75, az=83-194, has_obs=True
+
+=== G05 ===
+  track: 179 pts
+  observed: 110 pts, epochs 165-382
+  track pts with obs: 110 / 179
+  segments: 3, would_render: 2
+    seg 0: epochs 34-97 (64 pts), el=0-54, az=206-306, has_obs=False
+    seg 1: epochs 164-214 (51 pts), el=0-34, az=28-113, has_obs=True
+    seg 2: epochs 321-384 (64 pts), el=1-54, az=206-306, has_obs=True
+
+=== G06 ===
+  track: 183 pts
+  observed: 111 pts, epochs 120-338
+  track pts with obs: 111 / 183
+  segments: 4, would_render: 2
+    seg 0: epochs 0-52 (53 pts), el=1-55, az=206-306, has_obs=False
+    seg 1: epochs 119-170 (52 pts), el=0-34, az=27-112, has_obs=True
+    seg 2: epochs 276-339 (64 pts), el=1-55, az=207-306, has_obs=True
+    seg 3: epochs 406-419 (14 pts), el=0-23, az=95-113, has_obs=False
+

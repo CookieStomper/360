@@ -540,13 +540,9 @@ def merge_nav_obs(el_az_data, nav_epoch_millis, obs_epochs, mp_data=None):
             prefix = sv_id[0]
             constellation = {"G": "GPS", "E": "Galileo", "R": "GLONASS", "C": "BeiDou"}.get(prefix, prefix)
 
-        track = nav_info["track"] if nav_info else []
-        # Clip track to observation range so we don't render orphan segments
-        track = [p for p in track if obs_start_idx <= p[0] <= obs_end_idx]
-
         satellites[sv_id] = {
             "constellation": constellation,
-            "track": track,
+            "track": nav_info["track"] if nav_info else [],
             "observed": obs_info if obs_info else [],
         }
 

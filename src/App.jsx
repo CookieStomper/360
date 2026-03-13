@@ -560,6 +560,8 @@ function App() {
             gridInterval={gridInterval}
             satelliteData={satelliteData}
             epochIndex={epochIndex}
+            obsStartIdx={obsStartIdx}
+            obsEndIdx={obsEndIdx}
             constellationFilter={constellationFilter}
             trackMode={trackMode}
             trackColorMode={trackColorMode}

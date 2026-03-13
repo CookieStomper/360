@@ -49,7 +49,7 @@ function CameraNavigator({ lookAtTarget }) {
     return null;
 }
 
-export default function Viewer360({ imageUrl, showGrid, gridInterval, satelliteData, epochIndex, constellationFilter, trackMode, trackColorMode, showHeatmap, lookAtTarget }) {
+export default function Viewer360({ imageUrl, showGrid, gridInterval, satelliteData, epochIndex, obsStartIdx, obsEndIdx, constellationFilter, trackMode, trackColorMode, showHeatmap, lookAtTarget }) {
     if (!imageUrl) {
         return (
             <div className="flex items-center justify-center h-full bg-gray-900 text-white">
@@ -66,6 +66,8 @@ export default function Viewer360({ imageUrl, showGrid, gridInterval, satelliteD
                 <SatelliteOverlay
                     satelliteData={satelliteData}
                     epochIndex={epochIndex}
+                    obsStartIdx={obsStartIdx ?? 0}
+                    obsEndIdx={obsEndIdx ?? 0}
                     constellationFilter={constellationFilter}
                     trackMode={trackMode}
                     trackColorMode={trackColorMode}
